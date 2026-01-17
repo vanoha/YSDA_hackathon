@@ -329,9 +329,22 @@ class OpenAIClient:
                 - truncation (str, optional): Truncation strategy ("auto", "disabled")
         """
         self.config = config
-        self.client = OpenAI(api_key=config["api_key"], timeout=config.get("timeout", 60.0))
+        base_url = config.get("base_url", "https://api.vsegpt.ru/v1")
+        self.client = OpenAI(
+            api_key=config["api_key"],
+            timeout=config.get("timeout", 60.0),
+            base_url=base_url,
+        )
         self.tpm_bucket = TPMBucket(config["tpm_limit"])
         self.logger = logging.getLogger(__name__)
+        api_mode = config.get("api_mode")
+        if api_mode is None and "vsegpt" in base_url.lower():
+            api_mode = "chat"
+        self.api_mode = (api_mode or "responses").lower()
+        if self.api_mode == "chat_completions":
+            self.api_mode = "chat"
+        if self.api_mode not in ("responses", "chat"):
+            raise ValueError("api_mode must be 'responses' or 'chat'")
 
         # Last response_id for chain of responses
         self.last_response_id: Optional[str] = None
@@ -359,6 +372,12 @@ class OpenAIClient:
         else:
             self.response_chain = None
             chain_mode = "unlimited chain"
+
+        chat_depth = self.response_chain_depth if self.response_chain_depth else 0
+        self._chat_history_pairs = (
+            deque(maxlen=chat_depth) if self.api_mode == "chat" and chat_depth > 0 else None
+        )
+        self._pending_chat_pair: Optional[Tuple[str, str]] = None
 
         # Setup probe model and fallback chain
         self.probe_model = config.get("probe_model", "gpt-4.1-nano-2025-04-14")
@@ -389,7 +408,8 @@ class OpenAIClient:
 
         self.logger.info(
             f"Initialized OpenAI client: model={config['model']}, "
-            f"reasoning={self.is_reasoning_model}, chain_mode={chain_mode}"
+            f"reasoning={self.is_reasoning_model}, chain_mode={chain_mode}, "
+            f"api_mode={self.api_mode}"
         )
 
         # Initialize tokenizer for precise counting
@@ -636,6 +656,9 @@ class OpenAIClient:
             In background mode (async) OpenAI doesn't return rate limit headers,
             so we use periodic probe requests for updates.
         """
+        if self.api_mode == "chat":
+            self.logger.debug("Skipping TPM probe in chat completions mode")
+            return
         self.logger.debug("Executing TPM probe request")
 
         # Try probe model first, then fallbacks
@@ -1042,6 +1065,118 @@ class OpenAIClient:
         # If we got here - all retries exhausted
         raise last_exception or Exception("Max retries exceeded")
 
+    def _create_response_chat(
+        self,
+        instructions: str,
+        input_data: str,
+        is_repair: bool = False,
+    ) -> Tuple[str, str, ResponseUsage]:
+        """
+        Create response via Chat Completions API (vLLM-compatible).
+        """
+        if self.unconfirmed_response_id and not is_repair:
+            self.logger.warning(
+                f"Previous response {self.unconfirmed_response_id[:12]} was never confirmed, discarding"
+            )
+            self.unconfirmed_response_id = None
+
+        messages = [{"role": "system", "content": instructions}]
+        if self._chat_history_pairs:
+            for user_text, assistant_text in self._chat_history_pairs:
+                messages.append({"role": "user", "content": user_text})
+                messages.append({"role": "assistant", "content": assistant_text})
+        messages.append({"role": "user", "content": input_data})
+
+        full_prompt = instructions + "\n\n" + input_data
+        estimated_input_tokens = len(self.encoder.encode(full_prompt))
+        required_tokens = estimated_input_tokens + self.config["max_completion"]
+
+        safety_margin = self.config.get("tpm_safety_margin", 0.15)
+        self.tpm_bucket.wait_if_needed(required_tokens, safety_margin)
+
+        retry_count = 0
+        last_exception = None
+
+        while retry_count <= self.config["max_retries"]:
+            try:
+                params = {
+                    "model": self.config["model"],
+                    "messages": messages,
+                    "max_tokens": self.config["max_completion"],
+                }
+                if self.config.get("temperature") is not None:
+                    params["temperature"] = self.config["temperature"]
+
+                response = self.client.chat.completions.create(**params)
+
+                response_text = response.choices[0].message.content or ""
+                response_id = getattr(response, "id", None) or str(uuid.uuid4())
+
+                usage = getattr(response, "usage", None)
+                input_tokens = getattr(usage, "prompt_tokens", 0) if usage else 0
+                output_tokens = getattr(usage, "completion_tokens", 0) if usage else 0
+                total_tokens = (
+                    getattr(usage, "total_tokens", input_tokens + output_tokens)
+                    if usage
+                    else 0
+                )
+
+                usage_info = ResponseUsage(
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    total_tokens=total_tokens,
+                    reasoning_tokens=0,
+                )
+
+                self.last_usage = usage_info
+
+                if not is_repair:
+                    self.unconfirmed_response_id = response_id
+                    self._pending_chat_pair = (input_data, response_text)
+
+                return response_text, response_id, usage_info
+
+            except openai.RateLimitError as e:
+                retry_count += 1
+                if retry_count > self.config["max_retries"]:
+                    self.logger.error(f"Error after all retries: {type(e).__name__}: {e}")
+                    raise e
+
+                wait_time = 20 * (2 ** (retry_count - 1))
+                self.logger.warning(
+                    f"{type(e).__name__}, retry {retry_count}/{self.config['max_retries']} in {wait_time}s"
+                )
+                time.sleep(wait_time)
+                last_exception = e
+
+            except openai.APIError as e:
+                retry_count += 1
+                if retry_count > self.config["max_retries"]:
+                    self.logger.error(f"Error after all retries: {type(e).__name__}: {e}")
+                    raise e
+
+                wait_time = 20 * (2 ** (retry_count - 1))
+                self.logger.warning(
+                    f"{type(e).__name__}, retry {retry_count}/{self.config['max_retries']} in {wait_time}s"
+                )
+                time.sleep(wait_time)
+                last_exception = e
+
+            except Exception as e:
+                retry_count += 1
+                if retry_count > self.config["max_retries"]:
+                    self.logger.error(f"Error after all retries: {type(e).__name__}: {e}")
+                    raise e
+
+                wait_time = 20 * (2 ** (retry_count - 1))
+                self.logger.warning(
+                    f"{type(e).__name__}, retry {retry_count}/{self.config['max_retries']} in {wait_time}s: {e}"
+                )
+                time.sleep(wait_time)
+                last_exception = e
+
+        raise last_exception or Exception("Max retries exceeded")
+
     def create_response(
         self,
         instructions: str,
@@ -1099,10 +1234,22 @@ class OpenAIClient:
         if previous_response_id is None:
             previous_response_id = self.last_response_id
 
-        # Call new asynchronous method with is_repair flag
-        return self._create_response_async(
-            instructions, input_data, previous_response_id, is_repair
-        )
+        if self.api_mode == "chat":
+            return self._create_response_chat(instructions, input_data, is_repair)
+
+        # Call asynchronous method with is_repair flag
+        try:
+            return self._create_response_async(
+                instructions, input_data, previous_response_id, is_repair
+            )
+        except openai.NotFoundError as e:
+            if "v1/responses" in str(e).lower():
+                self.logger.warning(
+                    "Responses endpoint not available, switching to chat completions mode"
+                )
+                self.api_mode = "chat"
+                return self._create_response_chat(instructions, input_data, is_repair)
+            raise
 
     def repair_response(
         self, instructions: str, input_data: str, previous_response_id: Optional[str] = None
@@ -1189,4 +1336,7 @@ class OpenAIClient:
 
         # Clear unconfirmed
         self.unconfirmed_response_id = None
+        if self.api_mode == "chat" and self._pending_chat_pair and self._chat_history_pairs:
+            self._chat_history_pairs.append(self._pending_chat_pair)
+        self._pending_chat_pair = None
         self.logger.debug(f"Response {response_id[:12]} confirmed and chain updated")

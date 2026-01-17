@@ -46,7 +46,8 @@ class EmbeddingsClient:
         if not api_key:
             raise ValueError("API key not found in config (embedding_api_key or api_key)")
 
-        self.client = OpenAI(api_key=api_key)
+        base_url = config.get("embedding_base_url") or config.get("base_url")
+        self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.model = config.get("embedding_model", "text-embedding-3-small")
 
         # TPM control

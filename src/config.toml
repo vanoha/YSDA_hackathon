@@ -6,9 +6,12 @@ tokenizer               = "o200k_base"
 allowed_extensions      = ["txt", "md", "html"]
 
 # gpt-5-2025-08-07 - дорогая
-# gpt-5-mini-2025-08-07 - дешевая
+# openai/gpt-5-nano - дешевая
 
 [itext2kg]
+base_url = "https://api.vsegpt.ru/v1"
+api_mode = "chat"
+
 is_reasoning        = true        # ОБЯЗАТЕЛЬНЫЙ! Иначе падаем с ошибкой. Проверь модель!
 
 # Управление контекстом
@@ -16,7 +19,7 @@ truncation = "auto"           # "auto" | "disabled" | закомментиров
 response_chain_depth = 1      # Глубина цепочки (1-N) | закомментировано = без ограничений | 0 = независимые запросы
 
 # Основная модель
-model 				= "gpt-5-mini-2025-08-07" # Новый ризонер: 400,000 / 128,000
+model 				= "openai/gpt-5-nano" # Новый ризонер: 400,000 / 128,000
 # model               = "gpt-4.1-2025-04-14" # Не ризонер: 1,047,576 / 32,768 
 max_context_tokens  = 400000
 tpm_limit           = 450000
@@ -24,7 +27,7 @@ max_completion      = 100000
 
 # Тестовая модель (только эти 4 параметра уникальные)
 # Тестовая модель по типу должна быть такой же, как и основная (или обе ризонеры или нет)
-model_test              = "gpt-5-mini-2025-08-07"  # Новый ризонер: 400,000 / 128,000
+model_test              = "openai/gpt-5-nano"  # Новый ризонер: 400,000 / 128,000
 # model_test              = "gpt-4.1-mini-2025-04-14" # Не ризонер: 1,047,576 / 32,768 
 max_context_tokens_test = 400000
 tpm_limit_test          = 450000
@@ -37,13 +40,13 @@ reasoning_summary   = "auto"
 # verbosity         = "medium"      # Закомментирован = null
 
 # Model for TPM probe requests (optional, defaults to cheapest available)
-probe_model = "gpt-4.1-nano-2025-04-14"
+probe_model = "openai/gpt-5-nano"
 
 # Weight for automatic MENTIONS edges (itext2kg_graph)
 auto_mentions_weight = 0.35  # Weak connection, can be strengthened by refiner
 
 # Остальные параметры утилиты (НЕ УДАЛЯТЬ! Копировать текущие значения)
-api_key             = "sk-..."  # Set via OPENAI_API_KEY env variable
+api_key             = ""  # Set via OPENAI_API_KEY env variable
 tpm_safety_margin   = 0.15
 log_level           = "info"
 timeout             = 1200
@@ -51,8 +54,9 @@ max_retries         = 3
 poll_interval       = 10
 
 [dedup]
-embedding_model     = "text-embedding-3-small"
+embedding_model     = "emb-openai/text-embedding-3-large"
 embedding_api_key   = ""  # Optional, uses OPENAI_API_KEY if not set
+embedding_base_url  = "https://api.vsegpt.ru/v1"
 embedding_tpm_limit = 1000000                   # Реальный лимит для embedding моделей
 max_batch_tokens    = 100000                    # Мягкий лимит токенов на батч
 max_texts_per_batch = 2048                      # Максимум текстов в одном запросе
@@ -65,6 +69,9 @@ faiss_metric        = "INNER_PRODUCT"
 k_neighbors         = 5
 
 [refiner]
+base_url = "https://api.vsegpt.ru/v1"
+api_mode = "chat"
+
 is_reasoning        = true        # ОБЯЗАТЕЛЬНЫЙ! Иначе падаем с ошибкой. Проверь модель!
 
 # Управление контекстом
@@ -72,7 +79,7 @@ is_reasoning        = true        # ОБЯЗАТЕЛЬНЫЙ! Иначе пад�
 response_chain_depth = 0      # Глубина цепочки (1-N) | закомментировано = без ограничений | 0 = независимые запросы
 
 # Основная модель
-model 				= "gpt-5-2025-08-07" # Новый ризонер: 400,000 / 128,000
+model 				= "openai/gpt-5-nano" # Новый ризонер: 400,000 / 128,000
 # model               = "gpt-4.1-2025-04-14" # Не ризонер: 1,047,576 / 32,768 
 max_context_tokens  = 400000
 tpm_limit           = 450000
@@ -80,7 +87,7 @@ max_completion      = 100000
 
 # Тестовая модель (только эти 4 параметра уникальные)
 # Тестовая модель по типу должна быть такой же, как и основная (или обе ризонеры или нет)
-model_test              = "gpt-5-mini-2025-08-07"  # Новый ризонер: 400,000 / 128,000
+model_test              = "openai/gpt-5-nano"  # Новый ризонер: 400,000 / 128,000
 # model_test              = "gpt-4.1-mini-2025-04-14" # Не ризонер: 1,047,576 / 32,768 
 max_context_tokens_test = 400000
 tpm_limit_test          = 450000
@@ -94,8 +101,9 @@ reasoning_summary   = "auto"
 
 # Параметры для embeddings и поиска пар
 run                 = true
-embedding_model     = "text-embedding-3-small"
+embedding_model     = "emb-openai/text-embedding-3-large"
 embedding_api_key   = ""  # Optional, uses OPENAI_API_KEY if not set
+embedding_base_url  = "https://api.vsegpt.ru/v1"
 embedding_tpm_limit = 1000000                   # Реальный лимит для embedding моделей
 max_batch_tokens    = 100000                    # Мягкий лимит токенов на батч
 max_texts_per_batch = 2048                      # Максимум текстов в одном запросе
@@ -115,7 +123,7 @@ backward_sim_threshold = 0.70        # Порог схожести для backwa
 # weight_high = 0.9
 
 # Остальные параметры утилиты
-api_key             = "sk-..."  # Set via OPENAI_API_KEY env variable
+api_key             = ""  # Set via OPENAI_API_KEY env variable
 tpm_safety_margin   = 0.15
 log_level           = "info"
 timeout             = 1200
